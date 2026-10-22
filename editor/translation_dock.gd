@@ -52,6 +52,7 @@ var _view: PopupMenu
 var _empty: Label
 var _main: HSplitContainer
 var _tree: Tree
+var _add_entry: Button
 var _info: Label
 var _source_view: TextEdit
 var _source_plural_label: Label
@@ -279,6 +280,16 @@ func _build_list(parent: Control) -> void:
 	_tree.item_activated.connect(_focus_editor)
 	_tree.gui_input.connect(_on_tree_input)
 	parent.add_child(_tree)
+	_add_entry = Button.new()
+	_add_entry.flat = true
+	_add_entry.icon = _icon("Add")
+	_add_entry.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_add_entry.focus_mode = Control.FOCUS_NONE
+	_add_entry.tooltip_text = "Add Entry…"
+	_add_entry.pressed.connect(func() -> void: _on_action(Action.ADD_ENTRY))
+	_tree.add_child(_add_entry)
+	_tree.resized.connect(_place_add_entry)
+	_tree.theme_changed.connect(_place_add_entry)
 
 
 func _build_editor(parent: Control) -> void:
@@ -667,7 +678,7 @@ func _configure() -> void:
 	_col_source = 2 if show_key else 1
 	_col_translation = _col_source + 1
 	_tree.set_column_expand(0, false)
-	_tree.set_column_custom_minimum_width(0, int(28 * EditorInterface.get_editor_scale()))
+	_tree.set_column_custom_minimum_width(0, int(maxf(28 * EditorInterface.get_editor_scale(), _add_entry.get_combined_minimum_size().x)))
 	if show_key:
 		_tree.set_column_title(_col_key, "Key")
 		_tree.set_column_expand_ratio(_col_key, 1)
@@ -679,6 +690,7 @@ func _configure() -> void:
 		_tree.set_column_title_alignment(column, HORIZONTAL_ALIGNMENT_LEFT)
 	_tree.set_column_expand_ratio(_col_source, 2)
 	_tree.set_column_expand_ratio(_col_translation, 2)
+	_place_add_entry.call_deferred()
 
 	for child in _notes_box.get_children():
 		_notes_box.remove_child(child)
@@ -835,6 +847,16 @@ func _check(entry: Catalog.Entry) -> Array[Dictionary]:
 				issue.message = "%s: %s" % [_form_title(form, translations.size()), issue.message]
 			issues.append(issue)
 	return issues
+
+
+## Puts the Add Entry button on the status column's empty header cell, measured the way Tree draws it.
+func _place_add_entry() -> void:
+	var panel := _tree.get_theme_stylebox(&"panel")
+	var title := _tree.get_theme_stylebox(&"title_button_normal")
+	var font := _tree.get_theme_font(&"title_button_font")
+	var height := font.get_height(_tree.get_theme_font_size(&"title_button_font_size")) + title.get_minimum_size().y
+	_add_entry.position = Vector2(panel.get_margin(SIDE_LEFT), panel.get_margin(SIDE_TOP))
+	_add_entry.size = Vector2(_tree.get_column_width(0), height)
 
 
 func _on_item_selected() -> void:
