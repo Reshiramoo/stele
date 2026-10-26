@@ -14,6 +14,9 @@ enum Order { FILE, SOURCE, TRANSLATION }
 enum Action { NEW, OPEN, SAVE, RELOAD, ADD_ENTRY, RENAME_ENTRY, DELETE_ENTRY, ADD_FORM, REMOVE_FORM,
 	ADD_LANGUAGE, PRE_TRANSLATE, VALIDATE, REGISTER, UNDO, REDO, MOVE_UP, MOVE_DOWN, TOGGLE_NEEDS_WORK, COPY_KEY }
 const UNFINISHED_FIRST := 100 # View menu id, after the Order ids
+enum SectionAction { NEW, RENAME, REMOVE }
+const NEW_SECTION := 1000 # "Move to Section" menu id
+const SECTION_COLUMN := "_section" # created when a file without sections gets its first one
 const SECTIONS_FROM := 200 # View menu ids: 200 = no sections, 200 + column = sections from that column
 ## Note columns with these names (without the "_") hold sections by default.
 const SECTION_COLUMNS: Array[String] = ["section", "category", "group", "screen", "scene", "page"]
@@ -56,6 +59,9 @@ var _file_select: OptionButton
 var _source_select: OptionButton
 var _target_select: OptionButton
 var _section_select: OptionButton
+var _sections_button: MenuButton
+var _sections: PopupMenu
+var _merge_menu: PopupMenu
 var _filter: LineEdit
 var _show: OptionButton
 var _actions: PopupMenu
@@ -102,6 +108,13 @@ var _language_edit: LineEdit
 var _language_name: Label
 var _unsaved_dialog: ConfirmationDialog
 var _rename_column_dialog: ConfirmationDialog
+var _section_dialog: ConfirmationDialog
+var _section_name: LineEdit
+var _section_hint: Label
+var _section_renaming := false # else names a new section for the current entry
+var _remove_section_dialog: ConfirmationDialog
+var _section_label: Label
+var _section_edit: LineEdit
 var _alert: AcceptDialog
 
 
@@ -265,6 +278,17 @@ func _build_toolbar(parent: Control) -> void:
 	_section_select.item_selected.connect(_on_section_selected)
 	_section_select.hide()
 	toolbar.add_child(_section_select)
+	_sections_button = MenuButton.new()
+	_sections_button.icon = _icon("Edit")
+	_sections_button.tooltip_text = "Manage sections"
+	_sections = _sections_button.get_popup()
+	_sections.id_pressed.connect(_on_section_action)
+	_sections.about_to_popup.connect(_fill_sections_menu)
+	_merge_menu = PopupMenu.new()
+	_merge_menu.id_pressed.connect(_merge_section)
+	_sections.add_child(_merge_menu)
+	_sections_button.hide()
+	toolbar.add_child(_sections_button)
 	_filter = LineEdit.new()
 	_filter.placeholder_text = "Filter (%s+F)" % _mod()
 	_filter.clear_button_enabled = true
@@ -459,6 +483,9 @@ func _build_dialogs() -> void:
 	var source_field := _dialog_field(grid, "Source text", "")
 	_source_text_label = source_field.label
 	_source_text_edit = source_field.edit
+	var section_field := _dialog_field(grid, "Section", "Empty for no section; a new name makes a new section")
+	_section_label = section_field.label
+	_section_edit = section_field.edit
 	_entry_error = Label.new()
 	_entry_error.add_theme_color_override(&"font_color", _color(&"error_color"))
 	grid.add_child(Control.new())
@@ -498,6 +525,29 @@ func _build_dialogs() -> void:
 		_pending = Callable()
 		_fill_file_select())
 	add_child(_unsaved_dialog)
+
+	_section_dialog = ConfirmationDialog.new()
+	var section_box := VBoxContainer.new()
+	_section_dialog.add_child(section_box)
+	_section_name = LineEdit.new()
+	_section_name.custom_minimum_size.x = 280 * EditorInterface.get_editor_scale()
+	_section_name.text_changed.connect(_validate_section_name)
+	section_box.add_child(_section_name)
+	_section_hint = Label.new()
+	section_box.add_child(_section_hint)
+	_section_dialog.register_text_enter(_section_name)
+	_section_dialog.confirmed.connect(_on_section_dialog_confirmed)
+	add_child(_section_dialog)
+
+	_remove_section_dialog = ConfirmationDialog.new()
+	_remove_section_dialog.title = "Remove Section"
+	_remove_section_dialog.ok_button_text = "Keep Entries"
+	_remove_section_dialog.add_button("Delete Entries", true, "delete")
+	_remove_section_dialog.confirmed.connect(func() -> void: _remove_section(false))
+	_remove_section_dialog.custom_action.connect(func(_action: StringName) -> void:
+		_remove_section_dialog.hide()
+		_remove_section(true))
+	add_child(_remove_section_dialog)
 
 	_rename_column_dialog = ConfirmationDialog.new()
 	_rename_column_dialog.title = "Not a Language"
@@ -961,12 +1011,20 @@ func _fill_section_menu() -> void:
 	for i in sections.size():
 		_section_menu.add_radio_check_item(sections[i] if sections[i] else "No section", i)
 		_section_menu.set_item_checked(i, sections[i] == _entry.cell(_group_column))
+	_section_menu.add_separator()
+	_section_menu.add_icon_item(_icon("Add"), "New Section…", NEW_SECTION)
 	_section_menu.set_meta(&"sections", sections)
 
 
 ## Gives the entry the picked section and moves it after that section's last entry.
 func _on_section_menu(index: int) -> void:
-	var section: String = _section_menu.get_meta(&"sections")[index]
+	if index == NEW_SECTION:
+		_ask_section_name(false)
+		return
+	_move_to_section(_section_menu.get_meta(&"sections")[index])
+
+
+func _move_to_section(section: String) -> void:
 	var entry := _entry
 	if entry == null or entry.cell(_group_column) == section:
 		return
@@ -987,6 +1045,218 @@ func _apply_section(entry: Catalog.Entry, section: String, index: int) -> void:
 	_catalog.insert_entry(entry, index)
 	_rebuild_list()
 	_go_to(entry)
+
+
+## Whether entries have a section column Stele can write to ("?context" is the entry's id).
+func _has_sections() -> bool:
+	return _catalog != null and _group_column != -1 and _group_column != _catalog.context_column
+
+
+## The section new entries go into: the one shown, else the current entry's.
+func _current_section() -> String:
+	if not _has_sections():
+		return ""
+	if _section_value != null:
+		return _section_value
+	return _entry.cell(_group_column) if _entry else ""
+
+
+## Section names in file order.
+func _section_names() -> PackedStringArray:
+	var names := PackedStringArray()
+	for entry in _catalog.messages():
+		if entry.cell(_group_column) not in names:
+			names.append(entry.cell(_group_column))
+	return names
+
+
+func _fill_sections_menu() -> void:
+	_sections.clear()
+	_sections.add_icon_item(_icon("Add"), "New Section…", SectionAction.NEW)
+	var selected := _section_value != null and _has_sections()
+	var shown := ("“%s”" % _section_value if _section_value else "No Section") if selected else "Section"
+	_sections.add_icon_item(_icon("Rename"), "Rename %s…" % shown, SectionAction.RENAME)
+	_sections.set_item_disabled(_sections.item_count - 1, not selected)
+	_merge_menu.clear()
+	if selected:
+		var names := _section_names()
+		for i in names.size():
+			if names[i] != _section_value:
+				_merge_menu.add_item(names[i] if names[i] else "No section", i)
+		_merge_menu.set_meta(&"sections", names)
+	_sections.add_submenu_node_item("Merge %s Into" % shown, _merge_menu)
+	_sections.set_item_disabled(_sections.item_count - 1, _merge_menu.item_count == 0)
+	_sections.add_icon_item(_icon("Remove"), "Remove %s…" % shown, SectionAction.REMOVE)
+	_sections.set_item_disabled(_sections.item_count - 1, not selected)
+	if not selected:
+		_sections.add_separator()
+		_sections.add_item("Pick a section in the list to rename, merge or remove it", -1)
+		_sections.set_item_disabled(_sections.item_count - 1, true)
+
+
+func _on_section_action(id: int) -> void:
+	match id:
+		SectionAction.NEW:
+			if not _has_sections():
+				# A file without sections gets a "_section" column first (or uses the one it has).
+				var column := _catalog.column_index(SECTION_COLUMN)
+				if column != -1:
+					_set_group_column(column)
+				else:
+					_flush_edit()
+					_commit("Add Section Column", _apply_section_column.bind(true), _apply_section_column.bind(false))
+			_section_value = null
+			_ask_entry(false)
+			_section_edit.text = ""
+			_section_edit.grab_focus()
+		SectionAction.RENAME:
+			_ask_section_name(true)
+		SectionAction.REMOVE:
+			var count := _catalog.messages().filter(func(entry: Catalog.Entry) -> bool:
+				return entry.cell(_group_column) == _section_value).size()
+			var entries := "%d entr%s" % [count, "y" if count == 1 else "ies"]
+			if _section_value:
+				_remove_section_dialog.dialog_text = "Remove the section “%s”?\n\nKeep Entries leaves its %s without a section; Delete Entries deletes them." % [_section_value, entries]
+			else:
+				_remove_section_dialog.dialog_text = "Delete the %s that have no section?" % entries
+			_remove_section_dialog.get_ok_button().visible = not String(_section_value).is_empty()
+			_remove_section_dialog.popup_centered()
+
+
+func _set_group_column(column: int) -> void:
+	_group_column = column
+	var settings := EditorInterface.get_editor_settings()
+	var sections: Dictionary = settings.get_project_metadata(META_SECTION, "sections", {})
+	if column == -1:
+		sections.erase(_catalog.path)
+	else:
+		sections[_catalog.path] = _catalog.header(column)
+	settings.set_project_metadata(META_SECTION, "sections", sections)
+
+
+func _apply_section_column(add: bool) -> void:
+	if add:
+		_set_group_column(_catalog.add_column(SECTION_COLUMN))
+	else:
+		_catalog.remove_last_column()
+		_set_group_column(-1)
+	_configure()
+	_rebuild_list()
+	_go_to(_entry)
+
+
+## Names a new section for the current entry, or renames the selected section.
+func _ask_section_name(renaming: bool) -> void:
+	if not _has_sections() or (renaming and _section_value == null) or (not renaming and _entry == null):
+		return
+	_section_renaming = renaming
+	_section_dialog.title = "Rename Section" if renaming else "New Section"
+	_section_name.text = _section_value if renaming else ""
+	_section_name.placeholder_text = "Section name"
+	_validate_section_name(_section_name.text)
+	_section_dialog.popup_centered()
+	_section_name.grab_focus()
+	_section_name.select_all()
+
+
+func _validate_section_name(text: String) -> void:
+	var section := text.strip_edges()
+	var exists := section in _section_names()
+	var ok := not section.is_empty()
+	if not _section_renaming:
+		_section_hint.text = "“%s” already exists; the entry moves into it." % section if exists \
+			else "%s moves into the new section." % _catalog.key(_entry)
+	elif section == _section_value:
+		ok = false
+		_section_hint.text = "Type a new name."
+	elif exists:
+		_section_hint.text = "“%s” already exists: the two sections will be merged." % section
+	else:
+		_section_hint.text = "Renames the section in every entry."
+	if section.is_empty():
+		_section_hint.text = "The name can't be empty."
+	_section_dialog.ok_button_text = ("Merge" if exists else "Rename") if _section_renaming else "Move"
+	_section_dialog.get_ok_button().disabled = not ok
+
+
+func _on_section_dialog_confirmed() -> void:
+	var section := _section_name.text.strip_edges()
+	if not _section_renaming:
+		_move_to_section(section)
+	elif section in _section_names():
+		_merge_into(_section_value, section)
+	else:
+		var old: String = _section_value
+		_change_sections("Rename Section", section, func() -> void:
+			for entry in _catalog.messages():
+				if entry.cell(_group_column) == old:
+					entry.set_cell(_group_column, section))
+
+
+func _merge_section(index: int) -> void:
+	_merge_into(_section_value, _merge_menu.get_meta(&"sections")[index])
+
+
+## Moves every entry of section [param from] into [param into], after its last entry.
+func _merge_into(from: String, into: String) -> void:
+	_change_sections("Merge Sections", into, func() -> void:
+		var moving: Array[Catalog.Entry] = []
+		for entry in _catalog.messages():
+			if entry.cell(_group_column) == from:
+				moving.append(entry)
+				entry.set_cell(_group_column, into)
+		var at := -1
+		for entry in moving:
+			_catalog.remove_entry(entry)
+		for i in _catalog.entries.size():
+			if _catalog.entries[i].kind == Catalog.Kind.MESSAGE and _catalog.entries[i].cell(_group_column) == into:
+				at = i + 1
+		for entry in moving:
+			_catalog.insert_entry(entry, at)
+			at += 1)
+
+
+func _remove_section(delete_entries: bool) -> void:
+	var section: String = _section_value
+	_change_sections("Delete Section Entries" if delete_entries else "Remove Section", null, func() -> void:
+		for entry in _catalog.messages():
+			if entry.cell(_group_column) != section:
+				continue
+			if delete_entries:
+				_catalog.remove_entry(entry)
+			else:
+				entry.set_cell(_group_column, ""))
+
+
+## Runs [param change] on the catalog as one undoable step, then shows [param show] (a section or null).
+func _change_sections(action: String, show: Variant, change: Callable) -> void:
+	_flush_edit()
+	var before := _layout()
+	change.call()
+	var after := _layout()
+	_commit(action, _apply_layout.bind(after, show), _apply_layout.bind(before, _section_value))
+
+
+## File order and every message's section, to restore after section changes.
+func _layout() -> Dictionary:
+	var sections := {}
+	for entry in _catalog.messages():
+		sections[entry] = entry.cell(_group_column)
+	return {entries = _catalog.entries.duplicate(), sections = sections, column = _group_column}
+
+
+func _apply_layout(layout: Dictionary, show: Variant) -> void:
+	_catalog.entries.assign(layout.entries)
+	for entry: Catalog.Entry in layout.sections:
+		if entry.cell(layout.column) != layout.sections[entry]:
+			entry.set_cell(layout.column, layout.sections[entry])
+	_section_value = show
+	_rebuild_list()
+	if _entry not in _catalog.entries or not _items.has(_entry):
+		var root := _tree.get_root()
+		_go_to(root.get_child(0).get_metadata(0) if root.get_child_count() > 0 else null)
+	else:
+		_go_to(_entry)
 
 
 ## Entries can be moved while the list shows them in file order.
@@ -1608,6 +1878,10 @@ func _ask_entry(renaming: bool) -> void:
 	_source_text_label.visible = has_source
 	_source_text_edit.visible = has_source
 	_source_text_label.text = _language(_source)
+	var has_section := not renaming and _has_sections()
+	_section_label.visible = has_section
+	_section_edit.visible = has_section
+	_section_edit.text = _current_section()
 	_validate_entry_dialog()
 	_entry_dialog.reset_size()
 	_entry_dialog.popup_centered(Vector2i(int(420 * EditorInterface.get_editor_scale()), 0))
@@ -1640,11 +1914,17 @@ func _on_entry_dialog_confirmed() -> void:
 	var entry := _catalog.create_entry(key, context, _plural_edit.text)
 	if _source != Catalog.KEY_COLUMN:
 		entry.set_cell(_source, _source_text_edit.text)
-	if _group_column != -1 and _group_column != _catalog.context_column:
-		# New entries join the section being worked on.
-		var section: String = _section_value if _section_value != null else (_entry.cell(_group_column) if _entry else "")
-		entry.set_cell(_group_column, section)
 	var index := _catalog.entries.find(_entry) + 1 if _entry else _catalog.entries.size()
+	if _has_sections():
+		var section := _section_edit.text.strip_edges()
+		entry.set_cell(_group_column, section)
+		if _entry == null or _entry.cell(_group_column) != section:
+			# After that section's last entry; a new section starts at the end of the file.
+			index = _catalog.entries.size()
+			for i in _catalog.entries.size():
+				var other := _catalog.entries[i]
+				if other.kind == Catalog.Kind.MESSAGE and other.cell(_group_column) == section:
+					index = i + 1
 	_commit("Add Entry", _apply_insert.bind(entry, index), _apply_remove.bind(entry))
 	_focus_editor.call_deferred()
 
@@ -1812,7 +2092,7 @@ func _on_view(id: int) -> void:
 		_section_value = null
 		var settings := EditorInterface.get_editor_settings()
 		var sections: Dictionary = settings.get_project_metadata(META_SECTION, "sections", {})
-		sections[_catalog.path] = _catalog.header(_group_column)
+		sections[_catalog.path] = _catalog.header(_group_column) # "" = None, chosen
 		settings.set_project_metadata(META_SECTION, "sections", sections)
 	elif id == UNFINISHED_FIRST:
 		_unfinished_first = not _unfinished_first
@@ -1874,6 +2154,7 @@ func _pick_group_column() -> int:
 
 ## Lists the sections in file order, with how many entries are left to translate in each.
 func _fill_sections() -> void:
+	_sections_button.visible = _catalog != null and _target != -1
 	_section_select.visible = _catalog != null and _group_column != -1
 	if not _section_select.visible:
 		_section_value = null
@@ -1936,7 +2217,8 @@ func _input(event: InputEvent) -> void:
 
 
 func _is_dialog_open() -> bool:
-	for dialog: Window in [_file_dialog, _entry_dialog, _language_dialog, _unsaved_dialog, _rename_column_dialog, _alert]:
+	for dialog: Window in [_file_dialog, _entry_dialog, _language_dialog, _unsaved_dialog, _rename_column_dialog,
+			_section_dialog, _remove_section_dialog, _alert]:
 		if dialog.visible:
 			return true
 	return false
