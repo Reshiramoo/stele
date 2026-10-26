@@ -23,11 +23,11 @@ key column itself, for files that only hold IDs. The dock remembers your choice 
 
 | Area | What it does |
 |---|---|
-| **List** | Every entry with its key, source text and translation; the **+** in the header's corner adds an entry. Untranslated entries are **bold**, Needs Work entries are yellow, and entries with issues get a warning or error icon. Filter by text, show All / Unfinished / Needs Work / With Issues / Translated, sort by file order, source or translation, with unfinished entries first if you like. |
+| **List** | Every entry with its key, source text and translation; the **+** in the header's corner adds an entry. Untranslated entries are **bold**, Needs Work entries are yellow, and entries with issues get a warning or error icon. Filter by text, show All / Unfinished / Needs Work / With Issues / Translated, sort by file order, source or translation, with unfinished entries first if you like. Drag entries (or Alt+↑/↓) to reorder them in the file; right-click for Add, Rename, Delete, Move Up/Down, Move to Section, Needs Work and Copy Key. |
 | **Sections** | A dropdown to work through one section at a time, with how many entries are left in each. Sections come from a `_section` column (or `_category`, `_group`, `_screen`, `_scene`, `_page`); pick another notes column or `?context` under **Sections From** in the sort menu. New entries join the section you're in. |
 | **Source text** | The text to translate, its plural form, key and context. |
 | **Translation** | The editor. Plural entries get one tab per form. **Needs Work** flags a translation for review; editing it clears the flag, as in Poedit. Issues show up underneath as you type. |
-| **Suggestions** | Translation memory: finished translations of similar source text from this file and every other translation CSV in the project, with a match percentage. Double-click or press Ctrl+1 … 9 to use one. |
+| **Translation Memory** | Close matches (75 %+) among the finished translations of this file and every other translation CSV in the project. Under each, the matched source shows what differs: words it has that yours doesn't are struck out, words only yours has are added as `+word`. Click or press Ctrl+1 … 5 to use one. **Terms** lists translations of shorter entries that appear in the text, like *Frog → 개구리* while translating "Frog skin unlocked!"; click one to insert it at the cursor. |
 | **Notes / Translator Comment** | The file's `_` note columns, editable, and a comment for this language. |
 | **Status bar** | Translated / untranslated / needs work / issue counts and a progress bar, like Poedit's. A button appears when some languages aren't in **Project Settings → Localization** yet; click it to add them. |
 
@@ -51,10 +51,11 @@ Poedit's, active while the dock has focus. Use Cmd instead of Ctrl on macOS.
 | Ctrl+Shift+↑ / Ctrl+Shift+↓ | Previous / next unfinished entry |
 | Ctrl+B | Copy the source text into the translation |
 | Ctrl+U | Toggle Needs Work |
-| Ctrl+1 … Ctrl+9 | Use suggestion 1 … 9 |
+| Ctrl+1 … Ctrl+5 | Use translation memory match 1 … 5 |
 | Ctrl+F | Filter |
 | Ctrl+S | Save |
 | Ctrl+Z / Ctrl+Shift+Z | Undo / redo catalog changes (with the list focused; in a text box they undo its typing) |
+| Alt+↑ / Alt+↓ | Move the entry up / down in the file (with the list focused, in File Order) |
 
 ## Checks
 

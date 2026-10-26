@@ -12,7 +12,7 @@ const TranslationMemory := preload("translation_memory.gd")
 enum Show { ALL, UNFINISHED, NEEDS_WORK, ISSUES, TRANSLATED }
 enum Order { FILE, SOURCE, TRANSLATION }
 enum Action { NEW, OPEN, SAVE, RELOAD, ADD_ENTRY, RENAME_ENTRY, DELETE_ENTRY, ADD_FORM, REMOVE_FORM,
-	ADD_LANGUAGE, PRE_TRANSLATE, VALIDATE, REGISTER, UNDO, REDO }
+	ADD_LANGUAGE, PRE_TRANSLATE, VALIDATE, REGISTER, UNDO, REDO, MOVE_UP, MOVE_DOWN, TOGGLE_NEEDS_WORK, COPY_KEY }
 const UNFINISHED_FIRST := 100 # View menu id, after the Order ids
 const SECTIONS_FROM := 200 # View menu ids: 200 = no sections, 200 + column = sections from that column
 ## Note columns with these names (without the "_") hold sections by default.
@@ -40,6 +40,7 @@ var _items := {} # Entry -> TreeItem
 var _issues := {} # Entry -> Array[Dictionary]
 var _duplicates := {}
 var _suggestions: Array[Dictionary] = []
+var _terms: Array[Dictionary] = []
 var _order := Order.FILE
 var _unfinished_first := false
 var _group_column := -1 # the column whose values are sections, or -1
@@ -73,7 +74,9 @@ var _add_form: Button
 var _remove_form: Button
 var _needs_work: Button
 var _issue_view: RichTextLabel
-var _suggestion_list: ItemList
+var _memory_view: RichTextLabel
+var _context: PopupMenu
+var _section_menu: PopupMenu
 var _notes_box: VBoxContainer
 var _note_edits := {} # column -> TextEdit
 var _comment: TextEdit
@@ -191,6 +194,8 @@ func _exit_tree() -> void:
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_PREDELETE:
 		_undo.free()
+	elif what == NOTIFICATION_DRAG_END and _tree:
+		_tree.drop_mode_flags = Tree.DROP_MODE_DISABLED
 
 
 # --- Building the UI ---------------------------------------------------------------------
@@ -294,7 +299,17 @@ func _build_list(parent: Control) -> void:
 	_tree.item_selected.connect(_on_item_selected)
 	_tree.item_activated.connect(_focus_editor)
 	_tree.gui_input.connect(_on_tree_input)
+	_tree.allow_rmb_select = true
+	_tree.item_mouse_selected.connect(_on_tree_clicked)
+	_tree.empty_clicked.connect(_on_tree_clicked)
+	_tree.set_drag_forwarding(_get_drag_data, _can_drop_data, _drop_data)
 	parent.add_child(_tree)
+	_context = PopupMenu.new()
+	_context.id_pressed.connect(_on_action)
+	add_child(_context)
+	_section_menu = PopupMenu.new()
+	_section_menu.id_pressed.connect(_on_section_menu)
+	_context.add_child(_section_menu)
 	_add_entry = Button.new()
 	_add_entry.flat = true
 	_add_entry.icon = _icon("Add")
@@ -337,7 +352,7 @@ func _build_editor(parent: Control) -> void:
 	var translation_label := _header("Translation")
 	translation_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	translation_label.mouse_filter = Control.MOUSE_FILTER_PASS
-	translation_label.tooltip_text = "{m}+Enter: done, go to the next unfinished entry\n{m}+↑ / {m}+↓: previous / next entry\n{m}+Shift+↑ / ↓: previous / next unfinished entry\n{m}+B: copy the source text\n{m}+U: toggle Needs Work\n{m}+1 … 9: use a suggestion\n{m}+F: filter · {m}+S: save\n{m}+Z / {m}+Shift+Z: undo / redo (with the list focused)".format({m = _mod()})
+	translation_label.tooltip_text = "{m}+Enter: done, go to the next unfinished entry\n{m}+↑ / {m}+↓: previous / next entry\n{m}+Shift+↑ / ↓: previous / next unfinished entry\n{m}+B: copy the source text\n{m}+U: toggle Needs Work\n{m}+1 … 5: use a translation memory match\n{m}+F: filter · {m}+S: save\n{m}+Z / {m}+Shift+Z: undo / redo (with the list focused)\nAlt+↑ / Alt+↓: move the entry (with the list focused)".format({m = _mod()})
 	translation_header.add_child(translation_label)
 	_add_form = _tool_button(translation_header, "Add", "Add a plural form (in every language)",
 		func() -> void: _on_action(Action.ADD_FORM))
@@ -373,13 +388,17 @@ func _build_sidebar(parent: Control) -> void:
 	box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.add_child(box)
 
-	box.add_child(_header("Suggestions"))
-	_suggestion_list = ItemList.new()
-	_suggestion_list.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_suggestion_list.custom_minimum_size.y = 80 * EditorInterface.get_editor_scale()
-	_suggestion_list.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
-	_suggestion_list.item_activated.connect(_use_suggestion)
-	box.add_child(_suggestion_list)
+	var memory_header := _header("Translation Memory")
+	memory_header.mouse_filter = Control.MOUSE_FILTER_PASS
+	memory_header.tooltip_text = "Close matches from this file and the project's other translation CSVs, with the words that differ highlighted, and translations of shorter entries that appear in this text. Click to use."
+	box.add_child(memory_header)
+	_memory_view = RichTextLabel.new()
+	_memory_view.bbcode_enabled = true
+	_memory_view.fit_content = true
+	_memory_view.scroll_active = false
+	_memory_view.meta_underlined = false
+	_memory_view.meta_clicked.connect(_on_memory_clicked)
+	box.add_child(_memory_view)
 	_notes_box = VBoxContainer.new()
 	box.add_child(_notes_box)
 	box.add_child(_header("Translator Comment"))
@@ -905,6 +924,137 @@ func _on_item_selected() -> void:
 		_select(item.get_metadata(0))
 
 
+func _on_tree_clicked(at: Vector2, button: int) -> void:
+	if button != MOUSE_BUTTON_RIGHT or _catalog == null or _target == -1:
+		return
+	if _tree.get_item_at_position(at) == null:
+		_select(null)
+	_context.clear()
+	_context.add_icon_item(_icon("Add"), "Add Entry…", Action.ADD_ENTRY)
+	if _entry:
+		_context.add_icon_item(_icon("Rename"), "Rename Entry…", Action.RENAME_ENTRY, KEY_F2)
+		_context.add_icon_item(_icon("Remove"), "Delete Entry", Action.DELETE_ENTRY, KEY_DELETE)
+		_context.add_separator()
+		var item: TreeItem = _items.get(_entry)
+		_context.add_icon_item(_icon("MoveUp"), "Move Up", Action.MOVE_UP, (KEY_MASK_ALT | KEY_UP) as Key)
+		_context.set_item_disabled(_context.item_count - 1, not _can_move() or item == null or item.get_prev() == null)
+		_context.add_icon_item(_icon("MoveDown"), "Move Down", Action.MOVE_DOWN, (KEY_MASK_ALT | KEY_DOWN) as Key)
+		_context.set_item_disabled(_context.item_count - 1, not _can_move() or item == null or item.get_next() == null)
+		if _group_column != -1 and _group_column != _catalog.context_column:
+			_fill_section_menu()
+			_context.add_submenu_node_item("Move to Section", _section_menu)
+		_context.add_separator()
+		_context.add_check_item("Needs Work", Action.TOGGLE_NEEDS_WORK, (KEY_MASK_CMD_OR_CTRL | KEY_U) as Key)
+		_context.set_item_checked(_context.item_count - 1, _catalog.is_needs_work(_entry, _target))
+		_context.add_icon_item(_icon("ActionCopy"), "Copy Key", Action.COPY_KEY)
+	_context.reset_size()
+	_context.position = Vector2i(_tree.get_screen_position() + at)
+	_context.popup()
+
+
+func _fill_section_menu() -> void:
+	_section_menu.clear()
+	var sections := PackedStringArray()
+	for entry in _catalog.messages():
+		if entry.cell(_group_column) not in sections:
+			sections.append(entry.cell(_group_column))
+	for i in sections.size():
+		_section_menu.add_radio_check_item(sections[i] if sections[i] else "No section", i)
+		_section_menu.set_item_checked(i, sections[i] == _entry.cell(_group_column))
+	_section_menu.set_meta(&"sections", sections)
+
+
+## Gives the entry the picked section and moves it after that section's last entry.
+func _on_section_menu(index: int) -> void:
+	var section: String = _section_menu.get_meta(&"sections")[index]
+	var entry := _entry
+	if entry == null or entry.cell(_group_column) == section:
+		return
+	_flush_edit()
+	var others := _catalog.entries.duplicate()
+	others.erase(entry)
+	var at := _catalog.entries.find(entry) # stays put when the section has no entries yet
+	for i in others.size():
+		if others[i].kind == Catalog.Kind.MESSAGE and others[i].cell(_group_column) == section:
+			at = i + 1
+	_commit("Move to Section", _apply_section.bind(entry, section, at),
+		_apply_section.bind(entry, entry.cell(_group_column), _catalog.entries.find(entry)))
+
+
+func _apply_section(entry: Catalog.Entry, section: String, index: int) -> void:
+	entry.set_cell(_group_column, section)
+	_catalog.remove_entry(entry)
+	_catalog.insert_entry(entry, index)
+	_rebuild_list()
+	_go_to(entry)
+
+
+## Entries can be moved while the list shows them in file order.
+func _can_move() -> bool:
+	return _order == Order.FILE and not _unfinished_first
+
+
+## Moves the current entry past its neighbour in the list.
+func _move(step: int) -> void:
+	if _entry == null:
+		return
+	if not _can_move():
+		_say("Sort by File Order, without Unfinished First, to move entries.")
+		return
+	var item: TreeItem = _items.get(_entry)
+	var other := (item.get_prev() if step < 0 else item.get_next()) if item else null
+	if other:
+		_move_entry(_entry, other.get_metadata(0), step > 0)
+
+
+## Moves [param entry] just before or after [param anchor] in the file.
+func _move_entry(entry: Catalog.Entry, anchor: Catalog.Entry, after: bool) -> void:
+	if entry == anchor:
+		return
+	_flush_edit()
+	var old := _catalog.entries.find(entry)
+	var others := _catalog.entries.duplicate()
+	others.erase(entry)
+	var index := others.find(anchor) + (1 if after else 0)
+	if index != old:
+		_commit("Move Entry", _apply_move.bind(entry, index), _apply_move.bind(entry, old))
+
+
+func _apply_move(entry: Catalog.Entry, index: int) -> void:
+	_catalog.remove_entry(entry)
+	_catalog.insert_entry(entry, index)
+	_rebuild_list()
+	_go_to(entry)
+
+
+func _get_drag_data(at: Vector2) -> Variant:
+	var item := _tree.get_item_at_position(at)
+	if item == null or not _can_move():
+		return null
+	var label := Label.new()
+	label.text = _catalog.key(item.get_metadata(0))
+	_tree.set_drag_preview(label)
+	_tree.drop_mode_flags = Tree.DROP_MODE_INBETWEEN
+	return {stele_entry = item.get_metadata(0)}
+
+
+func _can_drop_data(_at: Vector2, data: Variant) -> bool:
+	return data is Dictionary and data.has("stele_entry")
+
+
+func _drop_data(at: Vector2, data: Variant) -> void:
+	_tree.drop_mode_flags = Tree.DROP_MODE_DISABLED
+	var target := _tree.get_item_at_position(at)
+	var after := _tree.get_drop_section_at_position(at) > 0
+	if target == null: # below the last entry
+		var items := _tree.get_root().get_children()
+		if items.is_empty():
+			return
+		target = items[-1]
+		after = true
+	_move_entry(data.stele_entry, target.get_metadata(0), after)
+
+
 func _on_tree_input(event: InputEvent) -> void:
 	var key := event as InputEventKey
 	if key == null or not key.pressed or key.echo:
@@ -990,8 +1140,9 @@ func _show_entry() -> void:
 			edit.text = ""
 		_needs_work.set_pressed_no_signal(false)
 		_issue_view.text = ""
-		_suggestion_list.clear()
+		_memory_view.text = ""
 		_suggestions.clear()
+		_terms.clear()
 		_edit_before = {}
 		_updating = false
 		return
@@ -1026,7 +1177,7 @@ func _show_entry() -> void:
 		_note_edits[column].text = entry.cell(column)
 	_edit_before = _state(entry)
 	_show_issues()
-	_show_suggestions()
+	_show_memory()
 	_updating = false
 
 
@@ -1093,17 +1244,64 @@ func _show_issues() -> void:
 	_issue_view.visible = not lines.is_empty()
 
 
-func _show_suggestions() -> void:
-	_suggestion_list.clear()
-	_suggestions = _memory.suggest(_catalog, _source, _target, _catalog.source_forms(_entry, _source)[0], _entry)
+func _show_memory() -> void:
+	var source := _catalog.source_forms(_entry, _source)[0]
+	_suggestions = _memory.suggest(_catalog, _source, _target, source, _entry)
+	_terms = _memory.terms(_catalog, _source, _target, source, _entry)
+	var dim := _color(&"disabled_font_color").to_html(false)
+	var lines := PackedStringArray()
 	for i in _suggestions.size():
 		var suggestion := _suggestions[i]
-		_suggestion_list.add_item("%d%%  %s" % [roundi(suggestion.score * 100.0), _one_line(suggestion.text)])
-		_suggestion_list.set_item_tooltip(i, "%s\n\nFrom %s · %s+%d" % [suggestion.text, suggestion.origin, _mod(), i + 1])
-	if _suggestions.is_empty():
-		_suggestion_list.add_item("No suggestions")
-		_suggestion_list.set_item_disabled(0, true)
-		_suggestion_list.set_item_selectable(0, false)
+		var score := "Exact" if suggestion.score >= 1.0 else "%d%%" % roundi(suggestion.score * 100.0)
+		lines.append("[url=s%d][b]%s[/b]  %s[/url]" % [i, score, _escape_bbcode(suggestion.text)])
+		var note := "%s+%d" % [_mod(), i + 1]
+		if suggestion.origin != _catalog.path.get_file():
+			note += " · " + suggestion.origin
+		lines.append("[color=#%s]%s  ·  %s[/color]" % [dim, _diff(suggestion.source, source), note])
+	if not _terms.is_empty():
+		lines.append("[b]Terms[/b]")
+		for i in _terms.size():
+			lines.append("[url=t%d]%s → %s[/url]" % [i, _escape_bbcode(_terms[i].term), _escape_bbcode(_terms[i].text)])
+	if lines.is_empty():
+		lines.append("[color=#%s]No similar entries or known terms.[/color]" % dim)
+	_memory_view.text = "\n".join(lines)
+
+
+## [param matched] with the words [param current] doesn't have struck out, then the words
+## only [param current] has: what to change in the suggested translation.
+func _diff(matched: String, current: String) -> String:
+	var removed := _color(&"warning_color").to_html(false)
+	var added := _color(&"success_color").to_html(false)
+	var current_words := {}
+	for word in current.split(" ", false):
+		current_words[_bare_word(word)] = true
+	var matched_words := {}
+	var result := PackedStringArray()
+	for word in _one_line(matched).split(" ", false):
+		matched_words[_bare_word(word)] = true
+		var escaped := _escape_bbcode(word)
+		result.append(escaped if current_words.has(_bare_word(word)) else "[color=#%s][s]%s[/s][/color]" % [removed, escaped])
+	for word in _one_line(current).split(" ", false):
+		if not matched_words.has(_bare_word(word)):
+			result.append("[color=#%s]+%s[/color]" % [added, _escape_bbcode(word)])
+	return " ".join(result)
+
+
+static func _bare_word(word: String) -> String:
+	return word.strip_edges().to_lower().lstrip("\"'([¿¡").rstrip("\"').,!?:;…")
+
+
+func _on_memory_clicked(meta: Variant) -> void:
+	var link := String(meta)
+	var index := link.substr(1).to_int()
+	if link.begins_with("s"):
+		_use_suggestion(index)
+	elif link.begins_with("t") and index < _terms.size() and _entry:
+		var edit := _current_form()
+		if edit.editable:
+			edit.insert_text_at_caret(_terms[index].text)
+			edit.grab_focus()
+			_on_form_changed(_form_edits.find(edit))
 
 
 func _use_suggestion(index: int) -> void:
@@ -1308,6 +1506,15 @@ func _on_action(id: int) -> void:
 			_undo_redo(true)
 		Action.REDO:
 			_undo_redo(false)
+		Action.MOVE_UP, Action.MOVE_DOWN:
+			_move(-1 if id == Action.MOVE_UP else 1)
+		Action.TOGGLE_NEEDS_WORK:
+			if _entry and _target != -1:
+				_set_needs_work(not _catalog.is_needs_work(_entry, _target))
+		Action.COPY_KEY:
+			if _entry:
+				DisplayServer.clipboard_set(_catalog.key(_entry))
+				_say("Copied %s." % _catalog.key(_entry))
 
 
 func _update_actions() -> void:
@@ -1736,6 +1943,10 @@ func _is_dialog_open() -> bool:
 
 
 func _shortcut(key: InputEventKey, focus: Control) -> bool:
+	if focus == _tree and key.alt_pressed and not key.is_command_or_control_pressed() and not key.shift_pressed \
+			and (key.keycode == KEY_UP or key.keycode == KEY_DOWN):
+		_move(-1 if key.keycode == KEY_UP else 1)
+		return true
 	if not key.is_command_or_control_pressed() or key.alt_pressed:
 		return false
 	var shift := key.shift_pressed

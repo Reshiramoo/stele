@@ -2,12 +2,18 @@
 extends RefCounted
 ## Translation memory: the finished translations of the open catalog and of every other
 ## translation CSV in the project, looked up by source text. Close matches become
-## suggestions, like Poedit's sidebar; exact ones drive Pre-translate.
+## suggestions, like Poedit's sidebar; exact ones drive Pre-translate. Short entries found
+## inside a source text ("Frog" in "Frog skin unlocked!") are offered as terms.
 
 const Catalog := preload("catalog.gd")
 
-const MIN_SCORE := 0.6
-const MAX_SUGGESTIONS := 9
+const MIN_SCORE := 0.75
+const MAX_SUGGESTIONS := 5
+const MAX_TERMS := 8
+const MAX_TERM_WORDS := 4
+const TRAILING_PUNCTUATION := ".!?:;,…。！？：；、，"
+
+static var _tags := RegEx.create_from_string("\\[/?[A-Za-z_]+(?:[= ][^\\]]*)?\\]")
 
 var _files := PackedStringArray()
 var _cache := {} # path -> Catalog, reloaded when the file changes on disk
@@ -21,7 +27,7 @@ func set_files(files: PackedStringArray) -> void:
 			_cache.erase(cached)
 
 
-## Up to [constant MAX_SUGGESTIONS] [code]{text, score, origin}[/code] dictionaries,
+## Up to [constant MAX_SUGGESTIONS] [code]{text, score, source, origin}[/code] dictionaries,
 ## best first, for translating [param text] from [param source_column] to
 ## [param target_column] of [param current]. Other files are matched by locale.
 func suggest(current: Catalog, source_column: int, target_column: int, text: String,
@@ -41,11 +47,33 @@ func suggest(current: Catalog, source_column: int, target_column: int, text: Str
 				continue
 		var known: Dictionary = best.get(pair.translation, {})
 		if known.is_empty() or score > known.score:
-			best[pair.translation] = {text = pair.translation, score = score, origin = pair.origin}
+			best[pair.translation] = {text = pair.translation, score = score, source = source, origin = pair.origin}
 	var result: Array[Dictionary] = []
 	result.assign(best.values())
 	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.score > b.score)
 	return result.slice(0, MAX_SUGGESTIONS)
+
+
+## Short finished entries whose source appears as whole words inside [param text]:
+## [code]{term, text, origin}[/code] dictionaries, longest term first. BBCode and ending
+## punctuation are left out of both sides, so the translation fits into a sentence.
+func terms(current: Catalog, source_column: int, target_column: int, text: String,
+		exclude: Catalog.Entry = null) -> Array[Dictionary]:
+	var haystack := _plain(text).to_lower()
+	var found := {} # lowercase term -> term
+	for pair in _pairs(current, source_column, target_column, exclude):
+		var term := _plain(pair.source)
+		var lower := term.to_lower()
+		if term.length() < 2 or term.length() >= haystack.length() or found.has(lower) \
+				or term.split(" ", false).size() > MAX_TERM_WORDS or not _contains_words(haystack, lower):
+			continue
+		var translation := _plain(pair.translation)
+		if not translation.is_empty():
+			found[lower] = {term = term, text = translation, origin = pair.origin}
+	var result: Array[Dictionary] = []
+	result.assign(found.values())
+	result.sort_custom(func(a: Dictionary, b: Dictionary) -> bool: return a.term.length() > b.term.length())
+	return result.slice(0, MAX_TERMS)
 
 
 ## Source text -> translation for every exact match available, the open catalog first.
@@ -98,6 +126,31 @@ func _load(file: String) -> Catalog:
 		return null
 	_cache[file] = catalog
 	return catalog
+
+
+## [param text] without BBCode tags, surrounding whitespace or ending punctuation.
+static func _plain(text: String) -> String:
+	return _tags.sub(text, "", true).strip_edges().rstrip(TRAILING_PUNCTUATION).strip_edges()
+
+
+## Whether [param needle] occurs in [param haystack] with no letters or digits glued to it.
+static func _contains_words(haystack: String, needle: String) -> bool:
+	var from := 0
+	while true:
+		var at := haystack.find(needle, from)
+		if at == -1:
+			return false
+		var end := at + needle.length()
+		if (at == 0 or not _is_word_character(haystack[at - 1])) \
+				and (end == haystack.length() or not _is_word_character(haystack[end])):
+			return true
+		from = at + 1
+	return false
+
+
+## Letters with case, digits and "_". Scripts without spaces between words (CJK) never glue.
+static func _is_word_character(character: String) -> bool:
+	return character.to_upper() != character.to_lower() or character.is_valid_int() or character == "_"
 
 
 static func _locale_column(catalog: Catalog, locale: String) -> int:
