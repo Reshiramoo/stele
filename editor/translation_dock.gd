@@ -12,10 +12,12 @@ const TranslationMemory := preload("translation_memory.gd")
 enum Show { ALL, UNFINISHED, NEEDS_WORK, ISSUES, TRANSLATED }
 enum Order { FILE, SOURCE, TRANSLATION }
 enum Action { NEW, OPEN, SAVE, RELOAD, ADD_ENTRY, RENAME_ENTRY, DELETE_ENTRY, ADD_FORM, REMOVE_FORM,
-	ADD_LANGUAGE, PRE_TRANSLATE, VALIDATE, REGISTER, UNDO, REDO, MOVE_UP, MOVE_DOWN, TOGGLE_NEEDS_WORK, COPY_KEY }
+	ADD_LANGUAGE, PRE_TRANSLATE, VALIDATE, REGISTER, UNDO, REDO, MOVE_UP, MOVE_DOWN, TOGGLE_NEEDS_WORK, COPY_KEY,
+	EDIT_SOURCE }
 const UNFINISHED_FIRST := 100 # View menu id, after the Order ids
 enum SectionAction { NEW, RENAME, REMOVE }
 const NEW_SECTION := 1000 # "Move to Section" menu id
+const EDIT_SOURCE_MENU := 1000 # added to the source text boxes' own context menus
 const SECTION_COLUMN := "_section" # created when a file without sections gets its first one
 const SECTIONS_FROM := 200 # View menu ids: 200 = no sections, 200 + column = sections from that column
 ## Note columns with these names (without the "_") hold sections by default.
@@ -81,6 +83,10 @@ var _remove_form: Button
 var _needs_work: Button
 var _issue_view: RichTextLabel
 var _memory_view: RichTextLabel
+var _memory_fold: FoldableContainer
+var _edit_source: Button
+var _source_editing := false
+var _source_before := {} # the source text and other languages' flags when editing began
 var _context: PopupMenu
 var _section_menu: PopupMenu
 var _notes_box: VBoxContainer
@@ -362,14 +368,25 @@ func _build_editor(parent: Control) -> void:
 	_info.clip_text = true
 	_info.add_theme_color_override(&"font_color", _color(&"disabled_font_color"))
 	source_header.add_child(_info)
+	_edit_source = _tool_button(source_header, "Edit", "Edit the source text (Esc or ✎ again to finish)", _toggle_source_edit)
+	_edit_source.toggle_mode = true
 	_source_view = _text_edit()
-	_source_view.editable = false
 	box.add_child(_source_view)
 	_source_plural_label = _header("Plural")
 	box.add_child(_source_plural_label)
 	_source_plural_view = _text_edit()
-	_source_plural_view.editable = false
 	box.add_child(_source_plural_view)
+	for view: TextEdit in [_source_view, _source_plural_view]:
+		view.editable = false
+		view.text_changed.connect(_on_source_changed)
+		view.gui_input.connect(_on_source_input)
+		var menu := view.get_menu()
+		menu.add_separator()
+		menu.add_icon_item(_icon("Edit"), "Edit Source Text", EDIT_SOURCE_MENU)
+		menu.id_pressed.connect(func(id: int) -> void:
+			if id == EDIT_SOURCE_MENU:
+				_toggle_source_edit())
+		menu.about_to_popup.connect(_update_source_menu.bind(menu))
 
 	var translation_header := HBoxContainer.new()
 	box.add_child(translation_header)
@@ -412,17 +429,22 @@ func _build_sidebar(parent: Control) -> void:
 	box.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	scroll.add_child(box)
 
-	var memory_header := _header("Translation Memory")
-	memory_header.mouse_filter = Control.MOUSE_FILTER_PASS
-	memory_header.tooltip_text = "Close matches from this file and the project's other translation CSVs, with the words that differ highlighted, and translations of shorter entries that appear in this text. Click to use."
-	box.add_child(memory_header)
+	_memory_fold = FoldableContainer.new()
+	_memory_fold.title = "Translation Memory"
+	_memory_fold.tooltip_text = "Close matches from this file and the project's other translation CSVs, with the words that differ highlighted, and translations of shorter entries that appear in this text. Click to use."
+	_memory_fold.folded = EditorInterface.get_editor_settings().get_project_metadata(META_SECTION, "memory_folded", false)
+	_memory_fold.folding_changed.connect(func(folded: bool) -> void:
+		EditorInterface.get_editor_settings().set_project_metadata(META_SECTION, "memory_folded", folded)
+		if not folded and _entry:
+			_show_memory())
+	box.add_child(_memory_fold)
 	_memory_view = RichTextLabel.new()
 	_memory_view.bbcode_enabled = true
 	_memory_view.fit_content = true
 	_memory_view.scroll_active = false
 	_memory_view.meta_underlined = false
 	_memory_view.meta_clicked.connect(_on_memory_clicked)
-	box.add_child(_memory_view)
+	_memory_fold.add_child(_memory_view)
 	_notes_box = VBoxContainer.new()
 	box.add_child(_notes_box)
 	box.add_child(_header("Translator Comment"))
@@ -983,6 +1005,8 @@ func _on_tree_clicked(at: Vector2, button: int) -> void:
 	_context.add_icon_item(_icon("Add"), "Add Entry…", Action.ADD_ENTRY)
 	if _entry:
 		_context.add_icon_item(_icon("Rename"), "Rename Entry…", Action.RENAME_ENTRY, KEY_F2)
+		if _source != Catalog.KEY_COLUMN:
+			_context.add_icon_item(_icon("Edit"), "Edit Source Text", Action.EDIT_SOURCE)
 		_context.add_icon_item(_icon("Remove"), "Delete Entry", Action.DELETE_ENTRY, KEY_DELETE)
 		_context.add_separator()
 		var item: TreeItem = _items.get(_entry)
@@ -1390,6 +1414,11 @@ func _show_entry() -> void:
 	_updating = true
 	var entry := _entry
 	var editable := entry != null and _target != -1
+	_source_editing = false
+	_source_view.editable = false
+	_source_plural_view.editable = false
+	_edit_source.set_pressed_no_signal(false)
+	_edit_source.disabled = not editable
 	for edit in _form_edits:
 		edit.editable = editable
 	_needs_work.disabled = not editable
@@ -1515,6 +1544,10 @@ func _show_issues() -> void:
 
 
 func _show_memory() -> void:
+	if _memory_fold.folded:
+		_suggestions.clear()
+		_terms.clear()
+		return # looked up when unfolded
 	var source := _catalog.source_forms(_entry, _source)[0]
 	_suggestions = _memory.suggest(_catalog, _source, _target, source, _entry)
 	_terms = _memory.terms(_catalog, _source, _target, source, _entry)
@@ -1627,6 +1660,11 @@ func _state(entry: Catalog.Entry) -> Dictionary:
 
 ## Records the edits made to the current entry since it was shown as one undo step.
 func _flush_edit() -> void:
+	_flush_translation()
+	_finish_source_edit()
+
+
+func _flush_translation() -> void:
 	if _catalog == null or _entry == null or _edit_before.is_empty() or _target == -1:
 		return
 	var after := _state(_entry)
@@ -1638,6 +1676,117 @@ func _flush_edit() -> void:
 	_undo.commit_action(false)
 	_edit_before = after
 	_update_status()
+
+
+# --- Editing the source text ------------------------------------------------------------
+
+func _toggle_source_edit() -> void:
+	if _source_editing:
+		_finish_source_edit()
+	else:
+		_start_source_edit()
+
+
+## Unlocks the source text boxes. With the key column as the source, renames the key instead.
+func _start_source_edit() -> void:
+	_edit_source.set_pressed_no_signal(false)
+	if _entry == null or _target == -1:
+		return
+	if _source == Catalog.KEY_COLUMN:
+		_ask_entry(true)
+		return
+	_flush_edit()
+	_source_editing = true
+	_source_before = _source_state(_entry)
+	_source_view.editable = true
+	_source_plural_view.editable = true
+	_edit_source.set_pressed_no_signal(true)
+	_source_view.grab_focus()
+	_source_view.set_caret_line(_source_view.get_line_count() - 1)
+	_source_view.set_caret_column(_source_view.get_line(_source_view.get_line_count() - 1).length())
+	_say("Editing the %s source text. Press Esc or ✎ to finish." % _language(_source))
+
+
+## Locks the source text again and records the change as one undo step. The translations
+## were made from the old text, so they're flagged Needs Work, as gettext does.
+func _finish_source_edit() -> void:
+	if not _source_editing:
+		return
+	_source_editing = false
+	_source_view.editable = false
+	_source_plural_view.editable = false
+	_edit_source.set_pressed_no_signal(false)
+	var entry := _entry
+	if entry == null or _catalog.forms(entry, _source) == _source_before.forms:
+		return
+	var flagged := 0
+	for column: int in _source_before.flags:
+		if _catalog.status(entry, column) == Catalog.Status.TRANSLATED:
+			_catalog.set_needs_work(entry, column, true)
+			flagged += 1
+	var after := _source_state(entry)
+	_undo.create_action("Edit Source Text")
+	_undo.add_do_method(_apply_source.bind(entry, _source, after))
+	_undo.add_undo_method(_apply_source.bind(entry, _source, _source_before))
+	_undo.commit_action(false)
+	_edit_before = _state(entry)
+	_needs_work.set_pressed_no_signal(_catalog.is_needs_work(entry, _target))
+	_update_item(entry)
+	_show_issues()
+	_show_memory()
+	_update_status()
+	if flagged > 0:
+		_say("Source text changed: %d translation%s flagged Needs Work." % [flagged, "" if flagged == 1 else "s"])
+	else:
+		_say("Source text changed.")
+
+
+## The source forms of [param entry] and the Needs Work flags of every other language.
+func _source_state(entry: Catalog.Entry) -> Dictionary:
+	var flags := {}
+	for column in _catalog.locale_columns():
+		if column != _source:
+			flags[column] = _catalog.is_needs_work(entry, column)
+	return {forms = _catalog.forms(entry, _source), flags = flags}
+
+
+func _apply_source(entry: Catalog.Entry, column: int, state: Dictionary) -> void:
+	_catalog.set_forms(entry, column, state.forms)
+	for flagged: int in state.flags:
+		_catalog.set_needs_work(entry, flagged, state.flags[flagged])
+	_update_item(entry)
+	_go_to(entry)
+	_update_status()
+
+
+func _on_source_changed() -> void:
+	if _updating or not _source_editing or _entry == null:
+		return
+	var forms := _catalog.forms(_entry, _source)
+	var edited := forms.duplicate()
+	edited[0] = _source_view.text
+	if edited.size() > 1:
+		edited[1] = _source_plural_view.text
+	if edited == forms:
+		return
+	_catalog.set_forms(_entry, _source, edited)
+	_update_item(_entry)
+	_show_issues()
+	_update_status()
+
+
+func _on_source_input(event: InputEvent) -> void:
+	var key := event as InputEventKey
+	if _source_editing and key and key.pressed and key.keycode == KEY_ESCAPE:
+		_finish_source_edit()
+		get_viewport().set_input_as_handled()
+
+
+func _update_source_menu(menu: PopupMenu) -> void:
+	var index := menu.get_item_index(EDIT_SOURCE_MENU)
+	menu.set_item_text(index, "Rename Key…" if _source == Catalog.KEY_COLUMN
+		else "Finish Editing Source" if _source_editing else "Edit Source Text")
+	menu.set_item_disabled(index, _entry == null or _target == -1)
 
 
 func _set_needs_work(value: bool) -> void:
@@ -1781,6 +1930,8 @@ func _on_action(id: int) -> void:
 		Action.TOGGLE_NEEDS_WORK:
 			if _entry and _target != -1:
 				_set_needs_work(not _catalog.is_needs_work(_entry, _target))
+		Action.EDIT_SOURCE:
+			_start_source_edit()
 		Action.COPY_KEY:
 			if _entry:
 				DisplayServer.clipboard_set(_catalog.key(_entry))
