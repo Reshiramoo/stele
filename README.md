@@ -24,6 +24,7 @@ key column itself, for files that only hold IDs. The dock remembers your choice 
 | Area | What it does |
 |---|---|
 | **List** | Every entry with its key, source text and translation; the **+** in the header's corner adds an entry. Untranslated entries are **bold**, Needs Work entries are yellow, and entries with issues get a warning or error icon. Filter by text, show All / Unfinished / Needs Work / With Issues / Translated, sort by file order, source or translation, with unfinished entries first if you like. |
+| **Sections** | A dropdown to work through one section at a time, with how many entries are left in each. Sections come from a `_section` column (or `_category`, `_group`, `_screen`, `_scene`, `_page`); pick another notes column or `?context` under **Sections From** in the sort menu. New entries join the section you're in. |
 | **Source text** | The text to translate, its plural form, key and context. |
 | **Translation** | The editor. Plural entries get one tab per form. **Needs Work** flags a translation for review; editing it clears the flag, as in Poedit. Issues show up underneath as you type. |
 | **Suggestions** | Translation memory: finished translations of similar source text from this file and every other translation CSV in the project, with a match percentage. Double-click or press Ctrl+1 … 9 to use one. |

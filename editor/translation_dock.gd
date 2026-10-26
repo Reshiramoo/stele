@@ -14,6 +14,9 @@ enum Order { FILE, SOURCE, TRANSLATION }
 enum Action { NEW, OPEN, SAVE, RELOAD, ADD_ENTRY, RENAME_ENTRY, DELETE_ENTRY, ADD_FORM, REMOVE_FORM,
 	ADD_LANGUAGE, PRE_TRANSLATE, VALIDATE, REGISTER, UNDO, REDO }
 const UNFINISHED_FIRST := 100 # View menu id, after the Order ids
+const SECTIONS_FROM := 200 # View menu ids: 200 = no sections, 200 + column = sections from that column
+## Note columns with these names (without the "_") hold sections by default.
+const SECTION_COLUMNS: Array[String] = ["section", "category", "group", "screen", "scene", "page"]
 
 const SETTING_TRANSLATIONS := "internationalization/locale/translations"
 const META_SECTION := "stele"
@@ -39,6 +42,8 @@ var _duplicates := {}
 var _suggestions: Array[Dictionary] = []
 var _order := Order.FILE
 var _unfinished_first := false
+var _group_column := -1 # the column whose values are sections, or -1
+var _section_value: Variant = null # the section shown, or null for all
 var _updating := false
 var _files := PackedStringArray()
 var _pending := Callable() # what to do once unsaved changes are saved or discarded
@@ -49,6 +54,7 @@ var _col_translation := 2
 var _file_select: OptionButton
 var _source_select: OptionButton
 var _target_select: OptionButton
+var _section_select: OptionButton
 var _filter: LineEdit
 var _show: OptionButton
 var _actions: PopupMenu
@@ -246,6 +252,14 @@ func _build_toolbar(parent: Control) -> void:
 	_tool_button(toolbar, "Add", "Add a language column", _ask_language)
 	toolbar.add_child(VSeparator.new())
 
+	_section_select = OptionButton.new()
+	_section_select.tooltip_text = "Show one section. The sort menu picks which column holds sections."
+	_section_select.fit_to_longest_item = false
+	_section_select.clip_text = true
+	_section_select.custom_minimum_size.x = 140 * EditorInterface.get_editor_scale()
+	_section_select.item_selected.connect(_on_section_selected)
+	_section_select.hide()
+	toolbar.add_child(_section_select)
 	_filter = LineEdit.new()
 	_filter.placeholder_text = "Filter (%s+F)" % _mod()
 	_filter.clear_button_enabled = true
@@ -262,16 +276,11 @@ func _build_toolbar(parent: Control) -> void:
 	toolbar.add_child(_show)
 	var view_menu := MenuButton.new()
 	view_menu.icon = _icon("Sort")
-	view_menu.tooltip_text = "Sort order"
+	view_menu.tooltip_text = "Sort order and sections"
 	_view = view_menu.get_popup()
-	_view.add_radio_check_item("File Order", Order.FILE)
-	_view.add_radio_check_item("By Source Text", Order.SOURCE)
-	_view.add_radio_check_item("By Translation", Order.TRANSLATION)
-	_view.add_separator()
-	_view.add_check_item("Unfinished First", UNFINISHED_FIRST)
 	_view.id_pressed.connect(_on_view)
 	toolbar.add_child(view_menu)
-	_update_view_menu()
+	_fill_view_menu()
 
 
 func _build_list(parent: Control) -> void:
@@ -711,6 +720,8 @@ func _configure() -> void:
 	_tree.set_column_expand_ratio(_col_source, 2)
 	_tree.set_column_expand_ratio(_col_translation, 2)
 	_place_add_entry.call_deferred()
+	_group_column = _pick_group_column()
+	_fill_view_menu()
 
 	for child in _notes_box.get_children():
 		_notes_box.remove_child(child)
@@ -750,6 +761,7 @@ func _rebuild_list() -> void:
 	if _catalog == null or _target == -1:
 		_updating = false
 		return
+	_fill_sections()
 	_duplicates = _catalog.duplicate_ids()
 	var root := _tree.create_item()
 	var filter := _filter.text.strip_edges()
@@ -810,6 +822,8 @@ func _matches(entry: Catalog.Entry, filter: String) -> bool:
 		Show.TRANSLATED:
 			if status != Catalog.Status.TRANSLATED:
 				return false
+	if _section_value != null and entry.cell(_group_column) != _section_value:
+		return false
 	if filter.is_empty():
 		return true
 	for text in [_catalog.key(entry), _catalog.context(entry)] + Array(_catalog.source_forms(entry, _source)) \
@@ -1419,6 +1433,10 @@ func _on_entry_dialog_confirmed() -> void:
 	var entry := _catalog.create_entry(key, context, _plural_edit.text)
 	if _source != Catalog.KEY_COLUMN:
 		entry.set_cell(_source, _source_text_edit.text)
+	if _group_column != -1 and _group_column != _catalog.context_column:
+		# New entries join the section being worked on.
+		var section: String = _section_value if _section_value != null else (_entry.cell(_group_column) if _entry else "")
+		entry.set_cell(_group_column, section)
 	var index := _catalog.entries.find(_entry) + 1 if _entry else _catalog.entries.size()
 	_commit("Add Entry", _apply_insert.bind(entry, index), _apply_remove.bind(entry))
 	_focus_editor.call_deferred()
@@ -1539,6 +1557,7 @@ func _update_status() -> void:
 		_register.hide()
 		_not_language.hide()
 		return
+	_fill_sections()
 	var stats := _catalog.stats(_target)
 	var with_issues := _issues.values().filter(func(issues: Array) -> bool: return not issues.is_empty()).size()
 	var percent: float = 100.0 * stats.translated / stats.total if stats.total > 0 else 100.0
@@ -1575,12 +1594,20 @@ func _update_view() -> void:
 	_source_select.disabled = not ready
 	_target_select.disabled = not ready
 	_show.disabled = not ready
+	_section_select.disabled = not ready
 	_filter.editable = ready
 	_update_status()
 
 
 func _on_view(id: int) -> void:
-	if id == UNFINISHED_FIRST:
+	if id >= SECTIONS_FROM:
+		_group_column = id - SECTIONS_FROM if id > SECTIONS_FROM else -1
+		_section_value = null
+		var settings := EditorInterface.get_editor_settings()
+		var sections: Dictionary = settings.get_project_metadata(META_SECTION, "sections", {})
+		sections[_catalog.path] = _catalog.header(_group_column)
+		settings.set_project_metadata(META_SECTION, "sections", sections)
+	elif id == UNFINISHED_FIRST:
 		_unfinished_first = not _unfinished_first
 	else:
 		_order = id as Order
@@ -1588,10 +1615,92 @@ func _on_view(id: int) -> void:
 	_rebuild_list()
 
 
+func _fill_view_menu() -> void:
+	_view.clear()
+	_view.add_radio_check_item("File Order", Order.FILE)
+	_view.add_radio_check_item("By Source Text", Order.SOURCE)
+	_view.add_radio_check_item("By Translation", Order.TRANSLATION)
+	_view.add_separator()
+	_view.add_check_item("Unfinished First", UNFINISHED_FIRST)
+	_view.add_separator("Sections From")
+	_view.add_radio_check_item("None", SECTIONS_FROM)
+	if _catalog:
+		for column in _group_candidates():
+			_view.add_radio_check_item(_catalog.header(column), SECTIONS_FROM + column)
+	_update_view_menu()
+
+
 func _update_view_menu() -> void:
 	for order: int in Order.values():
 		_view.set_item_checked(_view.get_item_index(order), order == _order)
 	_view.set_item_checked(_view.get_item_index(UNFINISHED_FIRST), _unfinished_first)
+	for i in _view.item_count:
+		var id := _view.get_item_id(i)
+		if id >= SECTIONS_FROM:
+			_view.set_item_checked(i, id == SECTIONS_FROM + maxi(_group_column, 0))
+
+
+## Columns that can hold sections: the notes columns and "?context".
+func _group_candidates() -> PackedInt32Array:
+	var result := _catalog.note_columns()
+	if _catalog.context_column != -1:
+		result.append(_catalog.context_column)
+	return result
+
+
+## The section column chosen for this file, else a notes column named like one ("_section").
+func _pick_group_column() -> int:
+	var candidates := _group_candidates()
+	var remembered: Variant = EditorInterface.get_editor_settings().get_project_metadata(
+		META_SECTION, "sections", {}).get(_catalog.path)
+	if remembered is String:
+		if remembered.is_empty():
+			return -1 # chose None
+		var column := _catalog.column_index(remembered)
+		if column in candidates:
+			return column
+	for column in candidates:
+		if _catalog.header(column).trim_prefix("_").to_lower() in SECTION_COLUMNS:
+			return column
+	return -1
+
+
+## Lists the sections in file order, with how many entries are left to translate in each.
+func _fill_sections() -> void:
+	_section_select.visible = _catalog != null and _group_column != -1
+	if not _section_select.visible:
+		_section_value = null
+		return
+	var counts := {} # section -> [entries, unfinished], in file order
+	for entry in _catalog.messages():
+		var count: Array = counts.get_or_add(entry.cell(_group_column), [0, 0])
+		count[0] += 1
+		if _target != -1 and _catalog.status(entry, _target) != Catalog.Status.TRANSLATED:
+			count[1] += 1
+	if _section_value != null and not counts.has(_section_value):
+		_section_value = null
+	_section_select.clear()
+	_section_select.add_item("All Sections")
+	_section_select.set_item_metadata(0, null)
+	for section: String in counts:
+		var left: int = counts[section][1]
+		var index := _section_select.item_count
+		_section_select.add_item("%s (%s)" % [section if section else "No section", "%d left" % left if left else "done"])
+		_section_select.set_item_metadata(index, section)
+		_section_select.set_item_tooltip(index, "%d entries, %d left to translate" % [counts[section][0], left])
+		if section == _section_value:
+			_section_select.select(index)
+	if _section_value == null:
+		_section_select.select(0)
+
+
+func _on_section_selected(index: int) -> void:
+	_section_value = _section_select.get_item_metadata(index)
+	_select(_entry)
+	_rebuild_list()
+	var root := _tree.get_root()
+	if not _items.has(_entry) and root.get_child_count() > 0:
+		_go_to(root.get_child(0).get_metadata(0))
 
 
 func _say(text: String) -> void:
