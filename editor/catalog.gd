@@ -77,6 +77,15 @@ static func is_locale_name(column_name: String) -> bool:
 	return not TranslationServer.standardize_locale(column_name).is_empty()
 
 
+## Whether [param column_name] names a real language. Godot accepts nearly any word as a
+## locale ("section" -> "section"), so a stray column becomes a junk translation.
+static func is_language(column_name: String) -> bool:
+	if not is_locale_name(column_name):
+		return false
+	var language := TranslationServer.standardize_locale(column_name).get_slice("_", 0)
+	return language in TranslationServer.get_all_languages()
+
+
 func load_file(file: String, file_delimiter := ",") -> Error:
 	var f := FileAccess.open(file, FileAccess.READ)
 	if f == null:
@@ -337,6 +346,17 @@ func add_column(column_name: String) -> int:
 	columns.append(column_name)
 	_find_special_columns()
 	return columns.size() - 1
+
+
+## Renames a column, carrying its Needs Work flags and comments over.
+func rename_column(column: int, column_name: String) -> void:
+	var old_name := columns[column]
+	columns[column] = column_name
+	for store: Dictionary in [_needs_work, _comments]:
+		if store.has(old_name):
+			store[column_name] = store[old_name]
+			store.erase(old_name)
+	_find_special_columns()
 
 
 ## Removes the last column; only used to undo [method add_column].

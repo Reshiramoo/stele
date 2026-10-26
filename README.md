@@ -68,6 +68,9 @@ Like Poedit's validation, each translation is compared against its source text:
 | Leading or trailing whitespace differs | Warning |
 | The source ends with `.` `!` `?` `:` `…` `,` `;` and the translation doesn't (full-width `。！？：、` count) | Warning |
 
+When the source is the key column and the key is an id (`SHARE_MESSAGE`, `menu.start`), there's no text to
+compare against, so only the duplicate check runs. Keys written as text (`"Hello, %s!"`) are checked as usual.
+
 ## The CSV file
 
 Stele reads a file the way Godot's CSV importer does, and honours the file's import options (delimiter):
@@ -85,10 +88,14 @@ APPLE,,APPLES,%d apple,%d個のりんご,%d pomme,
 |---|---|
 | First column | The key (`tr("MENU_START")`). |
 | A locale (`en`, `ja`, `pt_BR`…) | One language. |
-| `_anything` | Ignored by Godot: notes for translators. |
+| `_anything` | Ignored by Godot: notes for translators. Use it for grouping columns like `_section` too. |
 | `?context` | Tells apart entries with the same key (`tr("OPEN", "verb")`). |
 | `?plural` | Makes the entry plural; the rows below it with an empty key hold the other plural forms (`tr_n()`). |
 | `?pluralrule` row | Overrides a language's plural rule. Kept as is; not shown. |
+
+Godot accepts almost any word as a locale, so a column named `section` or `comment` becomes a translation of its
+own. Stele marks such columns "(not a language)", doesn't pick them by default, and shows a warning in the status
+bar; click it to rename the column to `_section` (undoable).
 
 Saving rewrites the file from what was read, so columns, rows and special rows Stele doesn't show stay as they
 were, and a UTF-8 byte order mark (which spreadsheet apps rely on) is kept. Quoting is normalised: cells are only

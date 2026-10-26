@@ -18,6 +18,10 @@ const UNFINISHED_FIRST := 100 # View menu id, after the Order ids
 const SETTING_TRANSLATIONS := "internationalization/locale/translations"
 const META_SECTION := "stele"
 const MAX_LIST_TEXT := 200
+## Keys like "SHARE_MESSAGE" are ids, not text: nothing to check a translation against.
+const ID_PATTERN := "^[A-Za-z0-9_.:/-]+$"
+
+static var _id_regex := RegEx.create_from_string(ID_PATTERN)
 
 var _plugin: EditorPlugin
 var _catalog: Catalog
@@ -70,6 +74,7 @@ var _comment: TextEdit
 var _status: Label
 var _message: Label
 var _register: Button
+var _not_language: Button
 var _progress: ProgressBar
 
 var _file_dialog: EditorFileDialog
@@ -87,6 +92,7 @@ var _language_dialog: ConfirmationDialog
 var _language_edit: LineEdit
 var _language_name: Label
 var _unsaved_dialog: ConfirmationDialog
+var _rename_column_dialog: ConfirmationDialog
 var _alert: AcceptDialog
 
 
@@ -393,6 +399,11 @@ func _build_status_bar(parent: Control) -> void:
 	_register.tooltip_text = "Godot only loads translations listed in Project Settings → Localization"
 	_register.pressed.connect(_register_translations)
 	bar.add_child(_register)
+	_not_language = Button.new()
+	_not_language.flat = true
+	_not_language.icon = _icon("StatusWarning")
+	_not_language.pressed.connect(_ask_rename_column)
+	bar.add_child(_not_language)
 	_progress = ProgressBar.new()
 	_progress.custom_minimum_size.x = 160 * EditorInterface.get_editor_scale()
 	_progress.size_flags_vertical = Control.SIZE_SHRINK_CENTER
@@ -459,6 +470,12 @@ func _build_dialogs() -> void:
 		_pending = Callable()
 		_fill_file_select())
 	add_child(_unsaved_dialog)
+
+	_rename_column_dialog = ConfirmationDialog.new()
+	_rename_column_dialog.title = "Not a Language"
+	_rename_column_dialog.ok_button_text = "Rename"
+	_rename_column_dialog.confirmed.connect(_rename_column)
+	add_child(_rename_column_dialog)
 
 	_alert = AcceptDialog.new()
 	_alert.title = "Stele"
@@ -594,8 +611,11 @@ func _pick_columns(locale := "") -> void:
 	var languages := _catalog.locale_columns()
 	var remembered: Dictionary = EditorInterface.get_editor_settings().get_project_metadata(
 		META_SECTION, "columns", {}).get(_catalog.path, {})
-	_source = Catalog.KEY_COLUMN if languages.size() < 2 else languages[0]
-	_target = -1 if languages.is_empty() else languages[mini(1, languages.size() - 1)]
+	# Defaults skip columns Godot takes for locales that aren't languages ("section").
+	var real := Array(languages).filter(func(column: int) -> bool: return Catalog.is_language(_catalog.header(column)))
+	var defaults := real if not real.is_empty() else Array(languages)
+	_source = Catalog.KEY_COLUMN if defaults.size() < 2 else defaults[0]
+	_target = -1 if defaults.is_empty() else defaults[mini(1, defaults.size() - 1)]
 	if remembered.has("source"):
 		var column := _catalog.column_index(remembered.source)
 		if column == Catalog.KEY_COLUMN or column in languages:
@@ -714,6 +734,8 @@ func _language(column: int) -> String:
 	if column == Catalog.KEY_COLUMN:
 		return "Key"
 	var header := _catalog.header(column)
+	if not Catalog.is_language(header):
+		return "%s (not a language)" % header
 	var language := TranslationServer.get_locale_name(TranslationServer.standardize_locale(header))
 	return "%s (%s)" % [language, header] if language else header
 
@@ -840,6 +862,8 @@ func _check(entry: Catalog.Entry) -> Array[Dictionary]:
 		issues.append({severity = Validator.Severity.ERROR,
 			message = "Another entry has the same key and context; Godot keeps only the last one."})
 	var sources := _catalog.source_forms(entry, _source)
+	if _source == Catalog.KEY_COLUMN and _id_regex.search(sources[0]):
+		return issues
 	var translations := _catalog.forms(entry, _target)
 	for form in translations.size():
 		for issue in Validator.check(sources[mini(form, sources.size() - 1)], translations[form]):
@@ -1439,6 +1463,8 @@ func _unregistered_translations() -> PackedStringArray:
 		return result
 	var registered: PackedStringArray = ProjectSettings.get_setting(SETTING_TRANSLATIONS, PackedStringArray())
 	for column in _catalog.locale_columns():
+		if not Catalog.is_language(_catalog.header(column)):
+			continue
 		var locale := TranslationServer.standardize_locale(_catalog.header(column))
 		var file := "%s.%s.translation" % [_catalog.path.get_basename(), locale]
 		if not FileAccess.file_exists(file) or file in registered:
@@ -1448,6 +1474,46 @@ func _unregistered_translations() -> PackedStringArray:
 			continue
 		result.append(file)
 	return result
+
+
+## Columns Godot imports as locales whose language it doesn't know, like "section" or "comment".
+func _not_languages() -> PackedInt32Array:
+	var result := PackedInt32Array()
+	if _catalog == null:
+		return result
+	for column in _catalog.locale_columns():
+		if not Catalog.is_language(_catalog.header(column)):
+			result.append(column)
+	return result
+
+
+func _ask_rename_column() -> void:
+	var odd := _not_languages()
+	if odd.is_empty():
+		return
+	var header := _catalog.header(odd[0])
+	var base := _catalog.path.get_basename()
+	_rename_column_dialog.dialog_text = ("Godot reads the “%s” column as a language and imports it into %s.%s.translation.\n\n"
+		+ "Rename it to “_%s”? Godot ignores columns starting with “_”, and Stele shows them as notes beside each entry.\n"
+		+ "After saving, you can delete the old .translation file and remove it from Project Settings → Localization.") % [
+		header, base.get_file(), TranslationServer.standardize_locale(header), header]
+	_rename_column_dialog.set_meta(&"column", odd[0])
+	_rename_column_dialog.popup_centered()
+
+
+func _rename_column() -> void:
+	var column: int = _rename_column_dialog.get_meta(&"column")
+	var header := _catalog.header(column)
+	_flush_edit()
+	_commit("Rename Column", _apply_rename_column.bind(column, "_" + header), _apply_rename_column.bind(column, header))
+
+
+func _apply_rename_column(column: int, column_name: String) -> void:
+	_catalog.rename_column(column, column_name)
+	if _source not in _catalog.locale_columns() and _source != Catalog.KEY_COLUMN \
+			or _target not in _catalog.locale_columns():
+		_pick_columns()
+	_columns_changed()
 
 
 func _register_translations() -> void:
@@ -1471,6 +1537,7 @@ func _update_status() -> void:
 		_status.text = ""
 		_progress.hide()
 		_register.hide()
+		_not_language.hide()
 		return
 	var stats := _catalog.stats(_target)
 	var with_issues := _issues.values().filter(func(issues: Array) -> bool: return not issues.is_empty()).size()
@@ -1490,6 +1557,11 @@ func _update_status() -> void:
 	var missing := _unregistered_translations().size()
 	_register.text = "%d not in Localization" % missing
 	_register.visible = missing > 0
+	var odd := _not_languages()
+	_not_language.visible = not odd.is_empty()
+	if not odd.is_empty():
+		_not_language.text = "“%s” isn't a language" % _catalog.header(odd[0])
+		_not_language.tooltip_text = "Godot treats this column as a locale and generates a translation for it.\nClick to rename it to “_%s”, a notes column Godot ignores." % _catalog.header(odd[0])
 
 
 func _update_view() -> void:
@@ -1548,7 +1620,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _is_dialog_open() -> bool:
-	for dialog: Window in [_file_dialog, _entry_dialog, _language_dialog, _unsaved_dialog, _alert]:
+	for dialog: Window in [_file_dialog, _entry_dialog, _language_dialog, _unsaved_dialog, _rename_column_dialog, _alert]:
 		if dialog.visible:
 			return true
 	return false
