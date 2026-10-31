@@ -1,3 +1,5 @@
+<img src=".github/icon.png" alt="" width="128" align="right">
+
 # Stele
 
 Translation editor plugin for Godot 4.6+: Poedit's workflow for Godot's CSV translation files,
@@ -41,13 +43,12 @@ in a bottom dock inside the editor. Named after the Rosetta Stone, a stele with 
 
 ## Install
 
-1. Install **Stele** from the **AssetLib** tab at the top of the editor, which puts it in
-   `addons/stele`. Or clone this repository into your project's `addons` folder as `stele`:
-   ```bash
-   git clone https://github.com/Reshiramoo/stele.git addons/stele
-   ```
-   (or add it as a submodule: `git submodule add https://github.com/Reshiramoo/stele.git addons/stele`).
-   The folder must be named `stele`.
+1. Get the plugin into your project's `addons/stele` folder, either way:
+   - **AssetLib:** in the editor's **AssetLib** tab, search for **Stele**, then **Download** and
+     **Install**.
+   - **By hand:** download this repository (**Code → Download ZIP**, or a release) and copy its
+     `addons/stele` folder into your project's `addons` folder. With git, clone it anywhere and copy
+     or symlink that folder.
 2. **Project → Project Settings → Plugins** → enable **Stele**. A **Stele** tab appears in the bottom panel.
 
 ## Quick start
