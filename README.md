@@ -3,6 +3,42 @@
 Translation editor plugin for Godot 4.6+: Poedit's workflow for Godot's CSV translation files,
 in a bottom dock inside the editor. Named after the Rosetta Stone, a stele with one text in three scripts.
 
+![The Stele dock translating a game's strings into German](docs/images/dock.png)
+
+- **One entry at a time**, the way Poedit works: the source text, its notes and context on one
+  side, the translation on the other, and Ctrl+Enter to move to the next unfinished entry.
+- **Translation memory** from every translation CSV in the project: close matches with what
+  differs highlighted, and known terms ("Frog skin → Froschhaut") to insert with a click.
+- **Checks as you type**: placeholders (`%d`, `{name}`), BBCode tags, line breaks, whitespace,
+  end punctuation and duplicate keys, the same kinds of checks Poedit runs.
+- **Needs Work flags** and translator comments, kept in a small file next to the CSV so the team
+  shares them.
+- **Sections** from a `_section` column (or any notes column), to work through one screen or
+  scene at a time.
+- **Plain CSV in, plain CSV out**: saving keeps columns, special rows and the byte order mark it
+  doesn't touch, and reimports the file so the game shows the new text right away.
+
+## Contents
+
+- [Requirements](#requirements)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Translating](#translating)
+  - [Shortcuts](#shortcuts)
+- [Checks](#checks)
+- [The CSV file](#the-csv-file)
+- [Working with a team](#working-with-a-team)
+- [Troubleshooting](#troubleshooting)
+- [Not supported (yet)](#not-supported-yet)
+- [License](#license)
+
+## Requirements
+
+- Godot **4.6** or later (it uses the editor dock API added in 4.6).
+- Translations in Godot's **CSV** format, imported as translations (the default for `.csv` files).
+- Stele is editor-only. Your game uses the `.translation` files Godot's importer makes from the CSV,
+  so exported games don't need the plugin.
+
 ## Install
 
 1. Install **Stele** from the **AssetLib** tab at the top of the editor, which puts it in
@@ -13,6 +49,32 @@ in a bottom dock inside the editor. Named after the Rosetta Stone, a stele with 
    (or add it as a submodule: `git submodule add https://github.com/Reshiramoo/stele.git addons/stele`).
    The folder must be named `stele`.
 2. **Project → Project Settings → Plugins** → enable **Stele**. A **Stele** tab appears in the bottom panel.
+
+## Quick start
+
+Starting from nothing:
+
+1. In the **Stele** tab, **Catalog → New Translation File…** and save it as, say,
+   `res://localization/strings.csv`. It starts with a key column and English (`en`).
+2. **Catalog → Add Language…** for each language you translate into (`ja`, `fr`, `pt_BR`…).
+3. Add entries with the **+** in the list's header: a key (`MENU_START`) and its English text
+   (`Start Game`).
+4. Pick **From: English** and **To:** a language in the toolbar, then type each translation.
+   **Ctrl+Enter** marks it done and jumps to the next unfinished entry.
+5. **Ctrl+S** saves the CSV, and Godot reimports it into one `.translation` file per language.
+6. If the status bar shows a warning button about languages not in **Project Settings →
+   Localization**, click it: Godot only loads translations listed there.
+
+Then use the keys in your game. Controls translate their text by themselves; in code use `tr()`:
+
+```gdscript
+$StartButton.text = "MENU_START"                        # translated automatically
+$Coins.text = tr("COINS") % coins                       # "You have %d coins."
+TranslationServer.set_locale("ja")                      # switch language at runtime
+```
+
+Already have a CSV? Open it from the file list in the dock's toolbar, right-click it in the
+FileSystem dock → **Translate with Stele**, or select one of its `.translation` files.
 
 ## Translating
 
@@ -60,7 +122,10 @@ Poedit's, active while the dock has focus. Use Cmd instead of Ctrl on macOS.
 
 ## Checks
 
-Like Poedit's validation, each translation is compared against its source text:
+Like Poedit's validation, each translation is compared against its source text. Entries with an
+issue get an icon in the list, and the problem is spelled out under the translation as you type:
+
+![A placeholder mismatch flagged under the translation](docs/images/checks.png)
 
 | Check | Severity |
 |---|---|
@@ -107,6 +172,30 @@ quoted when they need it. Empty lines are dropped, as the importer does.
 CSV has nowhere to store Needs Work flags or translator comments, so Stele keeps them in a small JSON file next
 to the CSV (`strings.csv` → `strings.csv.stele`). Commit it along with the CSV so your team shares them. It's
 deleted when there's nothing left to keep.
+
+## Working with a team
+
+- **Commit the `.stele` file** next to each CSV: it holds the Needs Work flags and translator
+  comments, so everyone sees the same review state. Stele deletes it when nothing is left in it.
+- **Diffs stay small.** Saving keeps the column and row order and everything Stele doesn't show.
+  After the first save (which normalises quoting), a commit shows just the lines that were translated.
+- **Spreadsheets work alongside Stele.** Translators without Godot can edit the CSV in a
+  spreadsheet app; the UTF-8 byte order mark that those apps rely on is kept. When the file changes
+  on disk, use **Catalog → Reload from Disk**.
+- **Several files are fine.** Split strings by area (`menus.csv`, `dialogue.csv`); the translation
+  memory searches all of them, so a term translated in one file is suggested in the others.
+- **Hand-off check:** **Catalog → Validate** lists every entry with an issue, and the status bar's
+  counts show what's left per language.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---|---|
+| The dock's file list doesn't show my CSV. | Only CSVs imported as translations are listed. Select the file, open the **Import** dock, set **Import As** to **CSV Translation** and click **Reimport**. |
+| The game still shows keys (`MENU_START`) instead of text. | The language isn't in **Project Settings → Localization → Translations**. Click the status bar's warning button to add it, or add the `.translation` files there by hand. |
+| A column shows as "(not a language)". | Godot treats any column name as a locale. Notes columns need a leading underscore (`_notes`); click the status bar warning to rename it (undoable). |
+| Text looks garbled after editing in a spreadsheet. | Save the CSV as **UTF-8** (with BOM, if the app offers "CSV UTF-8"). |
+| Fields split in the wrong places. | Check the CSV's **Delimiter** in the Import dock; Stele reads and writes with the same one. |
 
 ## Not supported (yet)
 
