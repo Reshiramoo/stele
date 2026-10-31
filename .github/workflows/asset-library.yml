@@ -1,0 +1,83 @@
+# Packages the plugin for the Godot Asset Library.
+#
+# The repository keeps the plugin at its root, so it can be cloned straight into addons/stele.
+# The Asset Library installs a commit's zip as-is, so for it this workflow commits a copy laid
+# out as addons/stele/ to the asset-library branch. Push a tag matching plugin.cfg's version
+# (v1.2.3), then give the Asset Library the commit hash from the run's summary.
+name: Asset Library package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    env:
+      ADDON: stele
+      BRANCH: asset-library
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read version
+        id: version
+        run: |
+          version=$(sed -n 's/^version="\(.*\)"/\1/p' plugin.cfg)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME doesn't match plugin.cfg version $version"
+            exit 1
+          fi
+
+      - name: Commit the package to the asset-library branch
+        id: commit
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          pkg="$RUNNER_TEMP/pkg"
+          mkdir -p "$pkg"
+          # git archive leaves out paths marked export-ignore in .gitattributes.
+          git archive --prefix="addons/$ADDON/" HEAD | tar -x -C "$pkg"
+
+          export GIT_INDEX_FILE="$RUNNER_TEMP/index" GIT_WORK_TREE="$pkg"
+          git add -A
+          tree=$(git write-tree)
+
+          # Commits stack on the branch instead of replacing it, so the commits that older
+          # Asset Library versions point to stay downloadable.
+          parent=()
+          if git fetch origin "$BRANCH"; then
+            if [[ "$(git rev-parse 'FETCH_HEAD^{tree}')" == "$tree" ]]; then
+              echo "commit=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+              echo "No changes since the last package."
+              exit 0
+            fi
+            parent=(-p FETCH_HEAD)
+          fi
+
+          export GIT_AUTHOR_NAME="github-actions[bot]" GIT_COMMITTER_NAME="github-actions[bot]"
+          export GIT_AUTHOR_EMAIL="41898282+github-actions[bot]@users.noreply.github.com"
+          export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          commit=$(git commit-tree "$tree" "${parent[@]}" \
+            -m "$ADDON $VERSION for the Asset Library" -m "Packaged from $GITHUB_SHA.")
+          git push origin "$commit:refs/heads/$BRANCH"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Summary
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ steps.commit.outputs.commit }}
+        run: |
+          {
+            echo "### $ADDON $VERSION"
+            echo
+            echo "Asset Library **Download Commit**: \`$COMMIT\`"
+            echo
+            echo "Zip: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/archive/$COMMIT.zip"
+          } >> "$GITHUB_STEP_SUMMARY"

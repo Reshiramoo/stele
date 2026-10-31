@@ -5,7 +5,8 @@ in a bottom dock inside the editor. Named after the Rosetta Stone, a stele with 
 
 ## Install
 
-1. Clone this repository into your project's `addons` folder as `stele`:
+1. Install **Stele** from the **AssetLib** tab at the top of the editor, which puts it in
+   `addons/stele`. Or clone this repository into your project's `addons` folder as `stele`:
    ```bash
    git clone https://github.com/Reshiramoo/stele.git addons/stele
    ```
@@ -112,3 +113,7 @@ deleted when there's nothing left to keep.
 - `.po` / `.pot` files: Godot can import those directly, and Poedit itself handles them.
 - Removing a language column (do it in a text editor or spreadsheet).
 - Machine translation.
+
+## License
+
+Stele is released under the [MIT License](LICENSE).
