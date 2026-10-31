@@ -32,6 +32,7 @@ in a bottom dock inside the editor. Named after the Rosetta Stone, a stele with 
 - [Working with a team](#working-with-a-team)
 - [Troubleshooting](#troubleshooting)
 - [Not supported (yet)](#not-supported-yet)
+- [Support](#support)
 - [License](#license)
 
 ## Requirements
@@ -203,6 +204,12 @@ deleted when there's nothing left to keep.
 - `.po` / `.pot` files: Godot can import those directly, and Poedit itself handles them.
 - Removing a language column (do it in a text editor or spreadsheet).
 - Machine translation.
+
+## Support
+
+Found a bug or have an idea? [Open an issue](https://github.com/Reshiramoo/stele/issues) and mention
+your Godot and Stele versions. For anything else, email
+[support@reshiramoo.com](mailto:support@reshiramoo.com).
 
 ## License
 
